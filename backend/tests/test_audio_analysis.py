@@ -57,7 +57,8 @@ def test_risk_engine_deterministic_output():
     assert first["score"] == second["score"]
 
 
-def test_valid_audio_upload(tmp_path):
+@pytest.mark.asyncio
+async def test_valid_audio_upload(tmp_path):
     temp_file = create_wav_file(tmp_path / "test.wav")
     upload_file = SimpleNamespace(filename="test.wav", file=open(temp_file, "rb"), content_type="audio/wav")
     service = AudioAnalysisService()
@@ -68,33 +69,35 @@ def test_valid_audio_upload(tmp_path):
     mock_analyses.insert_one.return_value.inserted_id = "id"
 
     with patch("app.db.mongodb.MongoDB.get_db", return_value=mock_db), patch.object(service, "save_file", return_value=temp_file), patch.object(service, "validate_upload", return_value=temp_file.name):
-        result = service.analyze_audio(upload_file, "test-user")
+        result = await service.analyze_audio(upload_file, "test-user")
 
     assert result["media_type"] == "audio"
     assert "audio_analysis" in result
     assert result["deepfake_analysis"]["status"] == "DEMO"
 
 
-def test_invalid_file_type(tmp_path):
+@pytest.mark.asyncio
+async def test_invalid_file_type(tmp_path):
     temp_file = tmp_path / "test.txt"
     temp_file.write_text("not audio")
     upload_file = SimpleNamespace(filename="test.txt", file=open(temp_file, "rb"), content_type="text/plain")
     service = AudioAnalysisService()
 
     with pytest.raises(Exception) as exc:
-        service.analyze_audio(upload_file, "test-user")
+        await service.analyze_audio(upload_file, "test-user")
 
     assert "audio files are supported" in str(exc.value).lower()
 
 
-def test_file_too_large(tmp_path):
+@pytest.mark.asyncio
+async def test_file_too_large(tmp_path):
     temp_file = tmp_path / "large.wav"
     temp_file.write_bytes(b"0" * (26 * 1024 * 1024))
     upload_file = SimpleNamespace(filename="large.wav", file=open(temp_file, "rb"), content_type="audio/wav")
     service = AudioAnalysisService()
 
     with pytest.raises(Exception) as exc:
-        service.analyze_audio(upload_file, "test-user")
+        await service.analyze_audio(upload_file, "test-user")
 
     assert "cannot exceed" in str(exc.value).lower()
 

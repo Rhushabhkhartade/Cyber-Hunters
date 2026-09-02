@@ -11,7 +11,7 @@ class MongoDB:
     async def connect(cls) -> None:
         if cls.client is None:
             try:
-                cls.client = AsyncIOMotorClient(settings.mongo_uri)
+                cls.client = AsyncIOMotorClient(settings.mongo_uri, serverSelectionTimeoutMS=2000, connectTimeoutMS=2000)
                 cls.db = cls.client[settings.mongo_db_name]
                 await cls.db.command("ping")
             except Exception:

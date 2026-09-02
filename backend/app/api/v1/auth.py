@@ -53,6 +53,8 @@ async def get_current_user(token: str = Depends(oauth2_scheme)) -> dict:
 
     user = await db["users"].find_one({"username": username})
     if not user:
+        if settings.dev_auth_enabled and username == settings.dev_auth_username:
+            return {"id": "local-dev-user", "username": username, "email": f"{username}@sentinelai.dev"}
         raise HTTPException(status_code=401, detail="User not found")
     return {"id": str(user["_id"]), "username": user["username"], "email": user["email"]}
 

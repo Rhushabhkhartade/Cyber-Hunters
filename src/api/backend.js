@@ -3,8 +3,28 @@ const API_BASE_URL = (() => {
   if (configured) {
     return configured.replace(/^https:\/\/localhost/i, "http://localhost").replace(/^https:\/\/127\.0\.0\.1/i, "http://127.0.0.1");
   }
+  if (typeof window !== "undefined" && window.location?.hostname === "localhost") {
+    return "http://localhost:8000";
+  }
   return "http://127.0.0.1:8000";
 })();
+
+function formatApiError(payload, status, fallback) {
+  if (typeof payload?.detail === "string") {
+    return payload.detail;
+  }
+  if (Array.isArray(payload?.detail)) {
+    return payload.detail.map((d) => d.msg || JSON.stringify(d)).join("; ");
+  }
+  if (payload?.message) {
+    return payload.message;
+  }
+  if (status === 400) return "Validation error (400): Invalid request payload.";
+  if (status === 401) return "Authentication error (401): Invalid or expired credentials.";
+  if (status === 404) return "Endpoint not found (404): The requested API route does not exist.";
+  if (status >= 500) return `Backend server error (${status}): Failed to process request.`;
+  return fallback || `Request failed (HTTP ${status}).`;
+}
 
 function getStoredToken() {
   return localStorage.getItem("sentinelai_token");
@@ -59,14 +79,15 @@ async function ensureSession() {
     });
 
     if (!registerResponse.ok && registerResponse.status !== 409) {
-      throw new Error("Unable to register a demo user.");
+      // In dev mode, registration might not be required if user exists
     }
   } catch {
     // Keep going; the token endpoint may still succeed in development mode.
   }
 
+  let response;
   try {
-    const response = await fetch(`${API_BASE_URL}/api/v1/auth/token`, {
+    response = await fetch(`${API_BASE_URL}/api/v1/auth/token`, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: new URLSearchParams({
@@ -74,23 +95,27 @@ async function ensureSession() {
         password: demoUser.password,
       }),
     });
-
-    const payload = await response.json().catch(() => ({}));
-    if (response.ok && payload.access_token) {
-      setStoredToken(payload.access_token);
-      return payload.access_token;
-    }
-
-    if (payload.message) {
-      throw new Error(payload.message);
-    }
   } catch (error) {
     clearStoredToken();
-    throw new Error(error.message || "Unable to authenticate with the SentinelAI backend.", { cause: error });
+    throw new Error(
+      `Backend unavailable: Unable to connect to SentinelAI API at ${API_BASE_URL}. Ensure the backend server is running on port 8000.`,
+      { cause: error }
+    );
+  }
+
+  const payload = await response.json().catch(() => ({}));
+  if (response.ok && payload.access_token) {
+    setStoredToken(payload.access_token);
+    return payload.access_token;
   }
 
   clearStoredToken();
-  throw new Error("Unable to authenticate with the SentinelAI backend.");
+  const errorMsg = formatApiError(
+    payload,
+    response.status,
+    "Unable to authenticate with the SentinelAI backend."
+  );
+  throw new Error(errorMsg);
 }
 
 export async function uploadMedia(mediaType, file) {
@@ -108,7 +133,7 @@ export async function uploadMedia(mediaType, file) {
       body: formData,
     });
   } catch (err) {
-    throw new Error("Network error: Unable to connect to SentinelAI backend.", { cause: err });
+    throw new Error(`Network error: Unable to connect to SentinelAI backend at ${API_BASE_URL}.`, { cause: err });
   }
 
   if (response.status === 401) {
@@ -123,20 +148,21 @@ export async function uploadMedia(mediaType, file) {
         body: formData,
       });
     } catch (err) {
-      throw new Error("Network error: Unable to connect to SentinelAI backend.", { cause: err });
+      throw new Error(`Network error: Unable to connect to SentinelAI backend at ${API_BASE_URL}.`, { cause: err });
     }
   }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const errorMsg =
-      payload.message ||
-      payload.detail ||
-      (response.status === 413
+    const errorMsg = formatApiError(
+      payload,
+      response.status,
+      response.status === 413
         ? "File size exceeds the allowed limit."
         : response.status === 400
         ? "Invalid file format or unsupported media."
-        : `Upload failed (HTTP ${response.status}).`);
+        : `Upload failed (HTTP ${response.status}).`
+    );
     throw new Error(errorMsg);
   }
 
@@ -166,7 +192,7 @@ export async function startLiveCameraSession() {
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(payload.message || "Unable to start the live camera session.");
+    throw new Error(formatApiError(payload, response.status, "Unable to start the live camera session."));
   }
 
   return payload;
@@ -192,7 +218,7 @@ export async function sendLiveAudioChunk({ file, sessionId, chunkIndex, clientTr
       body: formData,
     });
   } catch (err) {
-    throw new Error("Network error: Unable to connect to SentinelAI live service.", { cause: err });
+    throw new Error(`Network error: Unable to connect to SentinelAI live service at ${API_BASE_URL}.`, { cause: err });
   }
 
   if (response.status === 401) {
@@ -207,16 +233,17 @@ export async function sendLiveAudioChunk({ file, sessionId, chunkIndex, clientTr
         body: formData,
       });
     } catch (err) {
-      throw new Error("Network error: Unable to connect to SentinelAI live service.", { cause: err });
+      throw new Error(`Network error: Unable to connect to SentinelAI live service at ${API_BASE_URL}.`, { cause: err });
     }
   }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const errorMsg =
-      payload.message ||
-      payload.detail ||
-      `Live audio chunk analysis failed (HTTP ${response.status}).`;
+    const errorMsg = formatApiError(
+      payload,
+      response.status,
+      `Live audio chunk analysis failed (HTTP ${response.status}).`
+    );
     throw new Error(errorMsg);
   }
 
@@ -259,7 +286,10 @@ async function _postThreat(endpoint, body) {
       body: JSON.stringify(body),
     });
   } catch (err) {
-    throw new Error("Network error: Unable to connect to SentinelAI backend.", { cause: err });
+    throw new Error(
+      `Backend unavailable: Unable to reach SentinelAI API at ${API_BASE_URL}. Ensure the backend server is running on port 8000.`,
+      { cause: err }
+    );
   }
 
   if (response.status === 401) {
@@ -275,16 +305,20 @@ async function _postThreat(endpoint, body) {
         body: JSON.stringify(body),
       });
     } catch (err) {
-      throw new Error("Network error: Unable to connect to SentinelAI backend.", { cause: err });
+      throw new Error(
+        `Backend unavailable: Unable to reach SentinelAI API at ${API_BASE_URL}. Ensure the backend server is running on port 8000.`,
+        { cause: err }
+      );
     }
   }
 
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
-    const errorMsg =
-      payload.message ||
-      payload.detail ||
-      `Threat scan failed (HTTP ${response.status}).`;
+    const errorMsg = formatApiError(
+      payload,
+      response.status,
+      `Threat scan failed (HTTP ${response.status}).`
+    );
     throw new Error(errorMsg);
   }
   return payload;
